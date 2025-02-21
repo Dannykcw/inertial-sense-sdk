@@ -136,7 +136,7 @@ int cComDataBuffer::ReadData(int pHandle, uint32_t dataId, vector<uint8_t>& data
     struct stat buf;
     FILE* file = m_buffers[pHandle][dataId].file;
     fflush(file);
-#ifdef __linux__
+#if  defined(__linux__) | defined(__APPLE__)
     fstat(fileno(file), &buf);
 #else
     fstat(_fileno(file), &buf);

@@ -20,6 +20,16 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 #include <linux/serial.h>
 #endif
 
+#if PLATFORM_IS_APPLE
+#include <libgen.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <termios.h>
+#include <IOKit/serial/IOSerialKeys.h>
+#include <IOKit/IOKitLib.h>
+#include <CoreFoundation/CoreFoundation.h>
+#endif
+
 using namespace std;
 
 
@@ -136,6 +146,116 @@ static void probe_serial8250_comports(vector<string>& comList, vector<string> co
 }
 
 #endif // #if PLATFORM_IS_LINUX
+
+#if PLATFORM_IS_APPLE
+static string get_driver(const string& tty) 
+{
+    struct stat st;
+    string devicedir = tty;
+
+    // Append '/device' to the tty-path
+    devicedir += "/device";
+    
+    if (lstat(devicedir.c_str(), &st)==0 && S_ISLNK(st.st_mode)) 
+	{	// Stat the devicedir and handle it if it is a symlink
+        char buffer[1024];
+        memset(buffer, 0, sizeof(buffer));
+
+        // Append '/driver' and return basename of the target
+        devicedir += "/driver";
+
+        if (readlink(devicedir.c_str(), buffer, sizeof(buffer)) > 0)
+		{
+            return basename(buffer);
+		}
+    }
+    return "";
+}
+
+static void register_comport( vector<string>& comList, vector<string>& comList8250, const string& dir) 
+{
+    // Get the driver the device is using
+    string driver = get_driver(dir);
+    
+    if (driver.size() > 0) 
+	{	// Skip devices without a driver
+        string devfile = string("/dev/") + basename(const_cast<char *>(dir.c_str()));
+
+        if (driver == "serial8250") 
+		{	// Put serial8250-devices in a seperate list
+            comList8250.push_back(devfile);
+        }
+        else if (driver != "port")
+        {
+            comList.push_back(devfile);
+		}
+    }
+}
+
+static void probe_serial8250_comports(vector<string>& comList, vector<string> comList8250) 
+{
+    vector<string>::iterator it = comList8250.begin();
+
+    // Iterate over all serial8250-devices
+    while (it != comList8250.end()) 
+	{   // Try to open the device
+        int fd = open((*it).c_str(), O_RDWR | O_NONBLOCK | O_NOCTTY);
+
+        if (fd >= 0) 
+		{   // Get serial_info
+            struct termios options;
+            if (tcgetattr(fd, &options)==0) 
+			{   
+                    comList.push_back(*it);
+            }
+            close(fd);
+        }
+        it ++;
+    }
+}
+
+vector<string> getMacOSSerialPorts()
+{
+    vector<string> serialPorts;
+    CFMutableDictionaryRef matchingDict;
+    io_iterator_t iterator;
+    io_object_t serialService;
+
+    // Create a matching dictionary for serial ports
+    matchingDict = IOServiceMatching(kIOSerialBSDServiceValue);
+    if (matchingDict == NULL)
+    {
+        cerr << "Failed to create matching dictionary" << endl;
+        return serialPorts;
+    }
+
+    // Query available serial devices
+    if (IOServiceGetMatchingServices(kIOMainPortDefault, matchingDict, &iterator) != KERN_SUCCESS)
+    {
+        cerr << "Failed to get matching services" << endl;
+        return serialPorts;
+    }
+
+    // Iterate through all found serial ports
+    while ((serialService = IOIteratorNext(iterator)))
+    {
+        CFTypeRef devicePathRef = IORegistryEntryCreateCFProperty(serialService, CFSTR(kIOCalloutDeviceKey), kCFAllocatorDefault, 0);
+        if (devicePathRef)
+        {
+            char devicePath[PATH_MAX];
+            if (CFStringGetCString((CFStringRef)devicePathRef, devicePath, sizeof(devicePath), kCFStringEncodingUTF8))
+            {
+                serialPorts.push_back(string(devicePath));
+            }
+            CFRelease(devicePathRef);
+        }
+        IOObjectRelease(serialService);
+    }
+
+    IOObjectRelease(iterator);
+    return serialPorts;
+}
+#endif // #if PLATFORM_IS_APPLE
 
 /**
  * Populates a vector of string identifiers for all available Serial/TTY/UART devices on the host system.
